@@ -10,15 +10,21 @@ RUN apt-get clean
 
 # Get Free5GC
 RUN cd $GOPATH/src \
-    && git clone --recursive -b v3.2.0 -j `nproc` https://github.com/free5gc/free5gc.git
+    && git clone --recursive -b v3.0.5 -j `nproc` https://github.com/free5gc/free5gc.git
 
 WORKDIR $GOPATH/src/free5gc
 
+# update .submodules to point to custom SMF source
+RUN sed -i 's#https://github.com/free5gc/smf.git#https://github.com/niloysh/smf.git#g' .gitmodules
+RUN git submodule sync --recursive
+
+# checkout and build SMF v3.0.5.1 which logs slice information
+RUN cd NFs/smf && git fetch && git checkout v3.0.5.1
 RUN make smf
 
 FROM alpine:3.15
 LABEL maintainer="Niloy Saha <niloysaha.ns@gmail.com>"
-LABEL description="Free5GC SMF v3.2.0"
+LABEL description="Free5GC SMF v3.0.5"
 ARG DEBUG_TOOLS
 
 # Install debug tools

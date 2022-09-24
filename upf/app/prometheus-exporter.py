@@ -25,7 +25,7 @@ hostname      = sock.gethostname()
 
 SEID = 0  # default SEID
 UPF_IPv4_ADDR = None  # N3 interface IP
-UPDATE_PERIOD = 5  # seconds
+UPDATE_PERIOD = 1  # seconds
 PDR_PACKET_COUNT = prom.Gauge('pdr_packet_count', 
                      'Cumulative packet counts per PDR', 
                      ['pdr_id', 'direction'])

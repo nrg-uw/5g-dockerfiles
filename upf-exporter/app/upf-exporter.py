@@ -15,15 +15,17 @@ import json
 import datetime
 import logging
 import threading
+from pprint import pformat
 
 FORMAT = "%(filename)s: %(asctime)s %(levelname)s %(message)s"
 logging.basicConfig(format=FORMAT, level=logging.INFO)
 
 UPF_STATS_FILE = "/var/log/upf_stats.json"
 EXPORTER_PORT = 9000
-UPDATE_PERIOD = 5  # seconds
-LOG_UPDATE_PERIOD = 30  # seconds
+UPDATE_PERIOD = 1  # seconds
+LOG_UPDATE_PERIOD = 1  # seconds
 CURRENT_STATS = None
+UPF_STATS_FILE_WAIT = 10  # seconds to wait for UPF stats file
 
 # Prometheus variables
 PDR_PACKET_COUNT = prom.Gauge('pdr_packet_count', 
@@ -37,15 +39,7 @@ prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
 prom.REGISTRY.unregister(prom.PLATFORM_COLLECTOR)
 prom.REGISTRY.unregister(prom.GC_COLLECTOR)
 
-
-
-def print_log_msg():
-    threading.Timer(LOG_UPDATE_PERIOD, print_log_msg).start()
-    if CURRENT_STATS:
-        logging.info(CURRENT_STATS)
-    else:
-        logging.info("No current stats ...")
-
+    
 # get metrics for a particular timestamp
 def get_metrics():
 
@@ -58,12 +52,19 @@ def get_metrics():
             global CURRENT_STATS
             CURRENT_STATS = data
 
+            if CURRENT_STATS:
+                logging.info(pformat(CURRENT_STATS))
+            else:
+                logging.info("No current stats ...")
+
             for item in data:
                 export_to_prometheus(item)
+
+            
     
     except FileNotFoundError:
-        logging.info("UPF stats file not found. Sleeping 30s ...")
-        time.sleep(30)
+        logging.info("Waiting for UPF stats file ...")
+        time.sleep(UPF_STATS_FILE_WAIT)
 
 # takes a stats item in the following format and exports it to Prometheus format
 # data = {
@@ -91,7 +92,6 @@ def export_to_prometheus(stats_item):
 def main():
     logging.info("Starting Prometheus server on port {}".format(EXPORTER_PORT))
     prom.start_http_server(EXPORTER_PORT)
-    print_log_msg()
     while True:
         get_metrics()
         # period between collection
