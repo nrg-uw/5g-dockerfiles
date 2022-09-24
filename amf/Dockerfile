@@ -4,23 +4,25 @@ ENV F5GC_MODULE amf
 LABEL maintainer="Niloy Saha <niloysaha.ns@gmail.com>"
 LABEL description="Free5GC AMF v3.2.0"
 ENV DEBIAN_FRONTEND=noninteractive
-ARG DEBUG_TOOLS
 
-# Install debug tools ~ 100MB (if DEBUG_TOOLS is set to true)
-RUN if [ "$DEBUG_TOOLS" = "true" ] ; then apt-get update && apt-get install -y vim strace net-tools iputils-ping curl netcat ; fi
+RUN apt-get update \
+    && apt-get -y install vim net-tools curl \
+    && apt-get clean
 
-
-RUN mkdir -p /free5gc/config
+# Set working dir
 WORKDIR /free5gc
+RUN mkdir -p config/ log/ config/TLS/
 
-# Copy executable and default configuration
+# Copy executable and default certs
 COPY --from=builder /free5gc/${F5GC_MODULE} ./
+COPY --from=builder /free5gc/config/TLS/${F5GC_MODULE}.pem ./config/TLS/
+COPY --from=builder /free5gc/config/TLS/${F5GC_MODULE}.key ./config/TLS/
 
-# Copy linked libs
-COPY --from=builder /free5gc/libgtp5gnl.so.0 /usr/local/lib
-COPY --from=builder /free5gc/liblogger.so /usr/local/lib
+# Config files volume
+VOLUME [ "/free5gc/config" ]
 
-COPY /app/* ./
+# Certificates (if not using default) volume
+VOLUME [ "/free5gc/config/TLS" ]
 
-# Update links
-RUN ldconfig
+# Exposed ports
+EXPOSE 8000

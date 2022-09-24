@@ -1,8 +1,8 @@
 FROM ghcr.io/niloysh/free5gc-base:v3.2.0 AS builder
 FROM ubuntu:20.04
-ENV F5GC_MODULE smf
+ENV F5GC_MODULE nssf
 LABEL maintainer="Niloy Saha <niloysaha.ns@gmail.com>"
-LABEL description="Free5GC SMF v3.2.0"
+LABEL description="Free5GC NSSF v3.2.0"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \

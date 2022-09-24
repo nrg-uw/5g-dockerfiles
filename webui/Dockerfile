@@ -1,8 +1,8 @@
 FROM ghcr.io/niloysh/free5gc-base:v3.2.0 AS builder
 FROM ubuntu:20.04
-ENV F5GC_MODULE smf
+ENV F5GC_MODULE webui
 LABEL maintainer="Niloy Saha <niloysaha.ns@gmail.com>"
-LABEL description="Free5GC SMF v3.2.0"
+LABEL description="Free5GC WebUI v3.2.0"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
@@ -11,12 +11,11 @@ RUN apt-get update \
 
 # Set working dir
 WORKDIR /free5gc
-RUN mkdir -p config/ log/ config/TLS/
+RUN mkdir -p config/ log/ config/TLS/ public/
 
 # Copy executable and default certs
 COPY --from=builder /free5gc/${F5GC_MODULE} ./
-COPY --from=builder /free5gc/config/TLS/${F5GC_MODULE}.pem ./config/TLS/
-COPY --from=builder /free5gc/config/TLS/${F5GC_MODULE}.key ./config/TLS/
+COPY --from=builder /free5gc/public ./public
 
 # Config files volume
 VOLUME [ "/free5gc/config" ]
@@ -25,4 +24,4 @@ VOLUME [ "/free5gc/config" ]
 VOLUME [ "/free5gc/config/TLS" ]
 
 # Exposed ports
-EXPOSE 8000
+EXPOSE 5000
