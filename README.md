@@ -19,5 +19,8 @@ You should probably use the `aio` image, which is built on Ubuntu:20.04.
 
 The `aio` image is around 220 Mb in size. The Ubuntu image is used for ease-of-use and experimentation; the focus is not on reducing the size of the image. Using other images such as [minideb](https://github.com/bitnami/minideb) or [alpine](https://hub.docker.com/_/alpine) can be used for reducing the size of the container images. Please note that the UPF does not support alpine.
 
+- `upf-custom`: UPF image with a PDR statistics collection app. It relies on [libgtp5gnl](https://github.com/free5gc/libgtp5gnl) and collects Rx and Tx PDR statistics for each PDR and writes them to a log file.
+- `upf-exporter`: Prometheus exporter which works alongside `upf-custom` to expose PDR statistics in [Prometheus format](https://prometheus.io/docs/concepts/metric_types/).
+
 # Credit
 These are heavily inspired by the [free5gc-compose](https://github.com/free5gc/free5gc-compose) project.
