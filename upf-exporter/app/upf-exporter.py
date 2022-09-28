@@ -3,37 +3,41 @@
 #----------------------------------------------------------------------------
 # Author: Niloy Saha
 # Email: niloysaha.ns@gmail.com
-# version ='1.0'
+# version ='2.0.0'
 # ---------------------------------------------------------------------------
 """
 Prometheus exporter which exports UPF PDR statistics from Free5gc UPF.
-Expects to read a JSON file containing UPF statistics
+Expects to read a JSON log containing UPF statistics
 """
 import prometheus_client as prom
+import subprocess as subproc
 import time
 import json
-import datetime
 import logging
-import threading
-from pprint import pformat
 
-FORMAT = "%(filename)s: %(asctime)s %(levelname)s %(message)s"
-logging.basicConfig(format=FORMAT, level=logging.INFO)
+# setup logger for console output
+console_logger = logging.getLogger(__name__)
+console_logger.setLevel(logging.INFO)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] [%(filename)s] %(message)s'))
+console_logger.addHandler(console_handler)
 
-UPF_STATS_FILE = "/var/log/upf_stats.json"
+UPF_STATS_FILE = "/var/log/upf_stats.log"
 EXPORTER_PORT = 9000
 UPDATE_PERIOD = 1  # seconds
-LOG_UPDATE_PERIOD = 1  # seconds
 CURRENT_STATS = None
-UPF_STATS_FILE_WAIT = 10  # seconds to wait for UPF stats file
+
+STATS_FILE_CURRENT_FLAG = 0
+STATS_FILE_PREV_FLAG = 0
+STATS_FILE_INIT_FLAG = 0
 
 # Prometheus variables
 PDR_PACKET_COUNT = prom.Gauge('pdr_packet_count', 
                      'Cumulative packet counts per PDR', 
-                     ['pdr_id', 'direction'])
+                     ['n3_ipaddr', 'n4_ipaddr','seid', 'pdrid', 'direction'])
 PDR_BYTE_COUNT = prom.Gauge('pdr_byte_count', 
                      'Cumulative byte counts per PDR', 
-                     ['pdr_id', 'direction'])
+                     ['n3_ipaddr', 'n4_ipaddr', 'seid', 'pdrid', 'direction'])
 
 prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
 prom.REGISTRY.unregister(prom.PLATFORM_COLLECTOR)
@@ -44,60 +48,91 @@ prom.REGISTRY.unregister(prom.GC_COLLECTOR)
 def get_metrics():
 
     try:
-        with open(UPF_STATS_FILE, 'r') as f:
-            # data should be list of dictionary items
-            # where each item is stats belonging to a PDR
-            data = json.load(f)
 
-            global CURRENT_STATS
-            CURRENT_STATS = data
+        completed_proc = subproc.run(["tail", "-n", "2", UPF_STATS_FILE], capture_output=True)
+        stdout = completed_proc.stdout.decode("utf-8").strip()
+        console_logger.debug(stdout)
 
-            if CURRENT_STATS:
-                logging.info(pformat(CURRENT_STATS))
-            else:
-                logging.info("No current stats ...")
+        global STATS_FILE_CURRENT_FLAG, STATS_FILE_PREV_FLAG, STATS_FILE_INIT_FLAG
 
-            for item in data:
-                export_to_prometheus(item)
+        if stdout:
+            STATS_FILE_CURRENT_FLAG = 1
+            if STATS_FILE_CURRENT_FLAG != STATS_FILE_PREV_FLAG:
+                console_logger.info("UPF stats file found. Starting read")
+                STATS_FILE_PREV_FLAG = STATS_FILE_CURRENT_FLAG
 
+        if not stdout:
+            STATS_FILE_CURRENT_FLAG = 0
+            
+            if not STATS_FILE_INIT_FLAG:
+                console_logger.warning("No UPF stats file")
+                STATS_FILE_INIT_FLAG = 1
+
+            if STATS_FILE_CURRENT_FLAG != STATS_FILE_PREV_FLAG:
+                console_logger.warning("No UPF stats file")
+                STATS_FILE_PREV_FLAG = STATS_FILE_CURRENT_FLAG
+            return
+
+        data = json.loads(stdout)
+        console_logger.debug(data)
+
+        global CURRENT_STATS
+        CURRENT_STATS = data
+
+        for item in data:
+            export_to_prometheus(item)
             
     
     except FileNotFoundError:
-        logging.info("Waiting for UPF stats file ...")
-        time.sleep(UPF_STATS_FILE_WAIT)
+        console_logger.exception("Error in getting metrics!")
 
-# takes a stats item in the following format and exports it to Prometheus format
-# data = {
-#         "timestamp" : str(timestamp),
-#         "pdr_id": str(pdr_id),
-#         "pkt_count" : [ul_pkt_cnt, dl_pkt_cnt],
-#         "byte_count": [ul_byte_cnt, dl_byte_cnt]
-#     }
 def export_to_prometheus(stats_item):
 
     pkt_count = stats_item["pkt_count"]
     byte_count = stats_item["byte_count"]
-    pdr_id = stats_item["pdr_id"]
+    pdrid = str(stats_item["pdrid"])
+    seid = str(stats_item["seid"])
+    n3_ipaddr = str(stats_item["upf_n3_ipaddr"])
+    n4_ipaddr = str(stats_item["upf_n4_ipaddr"])
 
 
-    PDR_PACKET_COUNT.labels(pdr_id=str(pdr_id), direction="uplink").set(pkt_count[0])
-    PDR_PACKET_COUNT.labels(pdr_id=str(pdr_id), direction="downlink").set(pkt_count[1])
+    PDR_PACKET_COUNT.labels(
+        n3_ipaddr=n3_ipaddr, 
+        n4_ipaddr=n4_ipaddr, 
+        seid=seid, 
+        pdrid=pdrid, 
+        direction="uplink").set(pkt_count[0])
+    PDR_PACKET_COUNT.labels(
+        n3_ipaddr=n3_ipaddr, 
+        n4_ipaddr=n4_ipaddr, 
+        seid=seid, 
+        pdrid=pdrid, 
+        direction="downlink").set(pkt_count[1])
 
-    PDR_BYTE_COUNT.labels(pdr_id=str(pdr_id), direction="uplink").set(byte_count[0])
-    PDR_BYTE_COUNT.labels(pdr_id=str(pdr_id), direction="downlink").set(byte_count[1])
+    PDR_BYTE_COUNT.labels(
+        n3_ipaddr=n3_ipaddr, 
+        n4_ipaddr=n4_ipaddr, 
+        seid=seid, 
+        pdrid=pdrid,
+        direction="uplink").set(byte_count[0])
+    PDR_BYTE_COUNT.labels(
+        n3_ipaddr=n3_ipaddr, 
+        n4_ipaddr=n4_ipaddr, 
+        seid=seid, 
+        pdrid=pdrid,
+        direction="downlink").set(byte_count[1])
 
 
 
 
 def main():
-    logging.info("Starting Prometheus server on port {}".format(EXPORTER_PORT))
+    console_logger.info("Starting Prometheus server on port {}".format(EXPORTER_PORT))
     prom.start_http_server(EXPORTER_PORT)
+
     while True:
         get_metrics()
-        # period between collection
         time.sleep(UPDATE_PERIOD)
 
 
 if __name__ == "__main__":
     main()
-
