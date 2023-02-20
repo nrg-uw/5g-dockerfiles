@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get -y install vim net-tools curl \
-    && apt-get install -y libmnl0 libyaml-0-2 iproute2 iptables \
+    && apt-get install -y libmnl0 libyaml-0-2 iproute2 iptables tcpdump iputils-ping \
     && apt-get clean
 
 # Set working dir
