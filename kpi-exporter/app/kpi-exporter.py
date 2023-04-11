@@ -3,7 +3,7 @@
 #----------------------------------------------------------------------------
 # Author: Niloy Saha
 # Email: niloysaha.ns@gmail.com
-# version ='1.0.0'
+# version ='1.1.0'
 # ---------------------------------------------------------------------------
 """
 Prometheus exporter which exports slice throughput KPI.
@@ -32,7 +32,7 @@ ELASTIC_INDEX = "logstash-filebeat"  # this index stores slice information from 
 ELASTIC_QUERY_URL = ELASTICSEARCH_URL + ELASTIC_INDEX + "/_search?pretty=true&filter_path=hits.hits*"
 
 # PARAMS = {'query': "pdr_packet_count"}  # get last data point (instant vector)
-PROM_PARAMS = {'query': 'deriv(pdr_byte_count[10s])'}  # per-second derivative of range vector
+PROM_PARAMS = {'query': 'deriv(pdr_byte_count[10s]) > 0'}  # per-second derivative of range vector
 
 ES_PARAMS = {   
     "size": 50,
@@ -48,6 +48,7 @@ HEADERS = {'Content-type': 'application/json'}
 
 # Prometheus variables
 SLICE_THROUGHPUT = prom.Gauge('slice_throughput', 'Throughput (bytes) per slice', ['snssai', 'seid', 'direction'])
+UP = False  # flag to track status
 
 # get rid of bloat
 prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
@@ -83,6 +84,9 @@ def sanitize_elastic_response(result):
     # drop useless columns
     df = pd.json_normalize(result["hits"]["hits"]).drop(columns=["_index", "_id", "_score", "_ignored", "sort"])
 
+    # drop NaN values
+    df = df.dropna()
+
     # rename columns to make them easier to work with
     df.columns = ["n3_ipaddr", "dnn", "seid", "n4_ipaddr", "snssai", "pdrid"]
 
@@ -105,25 +109,48 @@ def send_queries():
     r = requests.get(url=PROMETHEUS_URL + '/api/v1/query', params=PROM_PARAMS)
     data = r.json()
     prom_df = sanitize_prometheus_response(data)
-    # print(prom_df.head())
+    console_logger.debug("Prometheus")
+    console_logger.debug(prom_df)
+
+    if prom_df.empty:
+        console_logger.warning('Prometheus dataFrame is empty! Check if UFP exporter is running!')
+        global UP
+        if UP:
+            console_logger.debug("Clearing stale values in Prometheus")
+            SLICE_THROUGHPUT.clear()
+            UP = False
+        return
+
+
 
 
     es_json_params = json.dumps(ES_PARAMS)
     r = requests.get(ELASTIC_QUERY_URL, headers=HEADERS, auth=('n6saha', 'password'), data=es_json_params,  verify=False)
     data = r.json()
     es_df = sanitize_elastic_response(data)
-    # print(es_df.head())
+    console_logger.debug("ElasticSearch")
+    console_logger.debug(es_df)
 
-    # merge should get rid of old ES entries
-    # since prom should only be collecting information about active series
-    merged_df = prom_df.merge(es_df, on=["n3_ipaddr", "seid", "pdrid"])
-    merged_df = merged_df.drop_duplicates() 
-    # print(merged_df.head())
-    return merged_df
+    if es_df.empty:
+        console_logger.warning('ES dataFrame is empty! Check if SMF exporter is running!')
+        return
+
+   
+
+    try:
+        # merge should get rid of old ES entries
+        # since prom should only be collecting information about active series
+        merged_df = prom_df.merge(es_df, on=["n3_ipaddr", "pdrid"])
+        merged_df = merged_df.drop_duplicates() 
+        console_logger.debug(merged_df)
+        return merged_df
+    except:
+        console_logger.error('Merging dataframes from ES and Prometheus failed!')
+        return
 
 def get_slice_throughput(df):
     result = df.groupby(["snssai", "direction"])["value"].sum()
-    print(result)  # prints dataframe
+    console_logger.debug(result)  # prints dataframe
 
 def get_slice_x1_throughput_downlink(df):
     """ 
@@ -143,34 +170,48 @@ def get_slice_x1_throughput_uplink(df):
     mask = (df["snssai"] == "1@010203") & (df["direction"] == "uplink")
     result = df[mask]["value"].sum()
     result_mbits = (float(result) * 8) / (10 ** 6)
-    print("{} Mbits/sec".format(result_mbits))
+    console_logger.debug("{} Mbits/sec".format(result_mbits))
 
     
 
 
 def get_per_session_throughput(df):
     """ get slice throughput per PDU session """
-    result = df.groupby(["snssai", "seid", "direction"])["value"].sum()
-    # print(result)  # prints dataframe
+    result = df.groupby(["snssai", "seid_x", "direction"])["value"].sum()
+    result_bits = result.multiply(8)
+    result_mbits = result_bits.divide(10**6)
+    # print(result_mbits)  # prints dataframe
     return result
 
 def get_per_session_throughput_groups(df):
     """ get slice throughput per PDU session """
-    groups = df.groupby(["snssai", "seid", "direction"])["value"]
+    groups = df.groupby(["snssai", "seid_x", "direction"])["value"]
     return groups
 
 
 def run_kpi_computation():
     df = send_queries()
+    if df is None:
+        console_logger.warning("No data available!")
+        return
     groups = get_per_session_throughput_groups(df)
     export_to_prometheus(groups)
+    console_logger.info("Exporter is running ...")
+
 
 def export_to_prometheus(groups):
+
+    # set flag to indicate we are exporting metrics
+    global UP
+    UP = True
 
     for labels, group in groups:
         snssai, seid, direction = labels
         value = group.sum()
-        SLICE_THROUGHPUT.labels(snssai=snssai, seid=seid, direction=direction).set(value)
+        value_bits = value * 8.0
+        value_mbits = round(value_bits / 10 ** 6, 6)
+        console_logger.info(f"SNSSAI={snssai} | SEID={seid:2d} | DIR={direction:8s} | RATE (Mbps)={value_mbits}")
+        SLICE_THROUGHPUT.labels(snssai=snssai, seid=seid, direction=direction).set(value_mbits)
 
 def main():
     console_logger.info("Starting Prometheus server on port {}".format(EXPORTER_PORT))
@@ -186,5 +227,6 @@ if __name__ == "__main__":
     main()
     
     
+
 
 

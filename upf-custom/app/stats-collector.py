@@ -25,7 +25,7 @@ CURRENT_STATS = []  # hold current (one update period) stats for **all** PDRs
 
 # setup logger for console output
 console_logger = logging.getLogger(__name__)
-console_logger.setLevel(logging.INFO)
+console_logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] [%(filename)s] %(message)s'))
 console_logger.addHandler(console_handler)
@@ -75,19 +75,33 @@ def get_pdr_stats(pdr):
     Returns statistics for a given PDR
     """
 
+    # try:
+    #     # write PDR ID and interface name to proc file
+    #     # cmd = "echo 'upfgtp %d %d' > /proc/gtp5g/pdr" % (pdr['seid'], pdr['pdrid'])
+    #     cmd = ["/bin/echo", "'", "upfgtp",  "%d %d" % (pdr['seid'], pdr['pdrid']), "'", ">", "/proc/gtp5g/pdr"]
+    #     # subproc.run(cmd, shell=True)
+    #     out = subproc.run(cmd, capture_output=True)
+    #     stdout = out.stdout.decode('utf-8', errors='replace')
+    #     console_logger.debug(stdout)
+    # except:
+    #     console_logger.exception("Error in writing SEID, PDRID and interface to proc file!")
+
     try:
-        # write PDR ID and interface name to proc file
-        cmd = "echo 'upfgtp %d %d' > /proc/gtp5g/pdr" % (pdr['seid'], pdr['pdrid'])
-        subproc.run(cmd, shell=True)
+        with open("/proc/gtp5g/pdr", "w") as f:
+            f.write("upfgtp %d %d\n" % (pdr['seid'], pdr['pdrid']))
     except:
         console_logger.exception("Error in writing SEID, PDRID and interface to proc file!")
 
     try:
         # read the proc file
+        console_logger.debug("Trying to read proc file ...")
         cmd = ["cat", "/proc/gtp5g/pdr"]
-        stdout = subproc.run(cmd, capture_output=True).stdout.decode('utf-8')
+        out = subproc.run(cmd, capture_output=True)
+        stdout = out.stdout.decode('utf-8', errors='replace')
+        console_logger.debug(f"stdout={stdout}")
     except:
         console_logger.exception("Error in reading proc file!")
+        return
 
 
     ul_pkt_cnt_match = re.compile(r"UL Packet Count: (?P<count>[0-9]+)")
@@ -154,22 +168,26 @@ def get_metrics():
     active_pdrs = get_active_pdrs()
     console_logger.debug(active_pdrs)
 
+    # get_pdr_stats(active_pdrs[0])
+
     for pdr in active_pdrs:
         get_pdr_stats(pdr)
 
-    write_stats_to_file()
+    # write_stats_to_file()
 
     # clear current stats for next round of collection
     del CURRENT_STATS[:]
     
 def main():
     console_logger.info("Starting UPF stats collector")
-    while True:
-        try:
-            get_metrics()
-        except:
-            console_logger.exception("Exception in getting metrics")
-        time.sleep(UPDATE_PERIOD)
+    get_metrics()
+
+    # while True:
+    #     try:
+    #         get_metrics()
+    #     except:
+    #         console_logger.exception("Exception in getting metrics")
+    #     time.sleep(UPDATE_PERIOD)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get -y install git gcc cmake autoconf libtool pkg-config libmnl-dev libyaml-dev \
     && apt-get -y install vim net-tools curl \
-    && apt-get install -y libmnl0 libyaml-0-2 iproute2 iptables python3 \
+    && apt-get install -y libmnl0 libyaml-0-2 iproute2 iptables python3 iperf3 tcpdump \
     && apt-get clean
 
 
