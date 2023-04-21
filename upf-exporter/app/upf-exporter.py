@@ -1,137 +1,168 @@
-#!/usr/bin/env python3.8
-# -*- coding: utf-8 -*-
-#----------------------------------------------------------------------------
-# Author: Niloy Saha
-# Email: niloysaha.ns@gmail.com
-# version ='2.0.0'
-# ---------------------------------------------------------------------------
-"""
-Prometheus exporter which exports UPF PDR statistics from Free5gc UPF.
-Expects to read a JSON log containing UPF statistics
-"""
-import prometheus_client as prom
-import subprocess as subproc
+#!/usr/bin/python3
+import os
+import re
 import time
-import json
+import subprocess
 import logging
+from prometheus_client import start_http_server, Gauge, REGISTRY, PLATFORM_COLLECTOR, PROCESS_COLLECTOR, GC_COLLECTOR
 
-# setup logger for console output
-console_logger = logging.getLogger(__name__)
-console_logger.setLevel(logging.INFO)
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] [%(filename)s] %(message)s'))
-console_logger.addHandler(console_handler)
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-UPF_STATS_FILE = "/var/log/upf_stats.log"
-EXPORTER_PORT = 9000
-UPDATE_PERIOD = 1  # seconds
-CURRENT_STATS = None
+PDR_INFO_LINE_MATCHER = re.compile(r"\[PDR No\.(\d+) SEID (\d+) Info\]")
 
-STATS_FILE_CURRENT_FLAG = 0
-STATS_FILE_PREV_FLAG = 0
-STATS_FILE_INIT_FLAG = 0
+# Define Prometheus metrics
+PACKET_COUNT = Gauge('pdr_packet_count', 'Number of packets', [
+                     'seid', 'pdrid', 'n3_ip', 'n4_ip', 'direction'])
+BYTE_COUNT = Gauge('pdr_byte_count', 'Number of bytes', [
+                   'seid', 'pdrid', 'n3_ip', 'n4_ip', 'direction'])
 
-# Prometheus variables
-PDR_PACKET_COUNT = prom.Gauge('pdr_packet_count', 
-                     'Cumulative packet counts per PDR', 
-                     ['n3_ipaddr', 'n4_ipaddr','seid', 'pdrid', 'direction'])
-PDR_BYTE_COUNT = prom.Gauge('pdr_byte_count', 
-                     'Cumulative byte counts per PDR', 
-                     ['n3_ipaddr', 'n4_ipaddr', 'seid', 'pdrid', 'direction'])
+SERVER_PORT = int(os.environ.get('SERVER_PORT', '9000'))
+SLEEP_INTERVAL = int(os.environ.get('SLEEP_INTERVAL', '10'))
 
-prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
-prom.REGISTRY.unregister(prom.PLATFORM_COLLECTOR)
-prom.REGISTRY.unregister(prom.GC_COLLECTOR)
+REGISTRY.unregister(PROCESS_COLLECTOR)
+REGISTRY.unregister(PLATFORM_COLLECTOR)
+REGISTRY.unregister(GC_COLLECTOR)
 
-    
-# get metrics for a particular timestamp
-def get_metrics():
 
+def get_active_pdrs():
+    """
+    Returns a list of active PDRs, each represented by a dictionary containing the PDR ID and SEID.
+    Extracts the information from the output of the 'gtp5g-tunnel list pdr' command using regex.
+    The list is sorted by the PDR ID in ascending order. Returns an empty list on error.
+    """
+    try:
+        completed_proc = subprocess.run(
+            ["/app/libgtp5gnl/tools/gtp5g-tunnel", "list", "pdr"], capture_output=True, text=True)
+        stdout = completed_proc.stdout
+
+        active_pdrs = []
+
+        for match in PDR_INFO_LINE_MATCHER.finditer(stdout):
+            pdrid, seid = match.groups()
+            active_pdrs.append({'pdrid': int(pdrid), 'seid': int(seid)})
+
+        active_pdrs_sorted = sorted(active_pdrs, key=lambda d: d['pdrid'])
+        return active_pdrs_sorted
+
+    except subprocess.CalledProcessError as e:
+        logging.warning(f"Error in getting active PDRs: {e}")
+        return []
+
+
+def get_pdr_stats(seid, pdrid):
+    """
+    Returns a dictionary containing packet and byte counts (both UL and DL) for a given PDR.
+
+    Parameters:
+    seid (int): the SEID of the PDR
+    pdrid (int): the ID of the PDR
+
+    Returns:
+    dict: a dictionary containing packet and byte counts (both UL and DL) for the PDR
+    """
     try:
 
-        completed_proc = subproc.run(["tail", "-n", "2", UPF_STATS_FILE], capture_output=True)
-        stdout = completed_proc.stdout.decode("utf-8").strip()
-        console_logger.debug(stdout)
+        with open('/proc/gtp5g/pdr', 'w') as f:
+            f.write(f'upfgtp {seid} {pdrid}\n')
 
-        global STATS_FILE_CURRENT_FLAG, STATS_FILE_PREV_FLAG, STATS_FILE_INIT_FLAG
+        # Get the PDR information from the proc interface
+        completed_proc = subprocess.run(
+            ["cat", "/proc/gtp5g/pdr"], capture_output=True, text=True, check=True)
+        stdout = completed_proc.stdout
 
-        if stdout:
-            STATS_FILE_CURRENT_FLAG = 1
-            if STATS_FILE_CURRENT_FLAG != STATS_FILE_PREV_FLAG:
-                console_logger.info("UPF stats file found. Starting read")
-                STATS_FILE_PREV_FLAG = STATS_FILE_CURRENT_FLAG
+        # Parse the packet and byte counts from the output
+        ul_packet_count_match = re.search(r"UL Packet Count: (\d+)", stdout)
+        dl_packet_count_match = re.search(r"DL Packet Count: (\d+)", stdout)
+        ul_byte_count_match = re.search(r"UL Byte Count: (\d+)", stdout)
+        dl_byte_count_match = re.search(r"DL Byte Count: (\d+)", stdout)
 
-        if not stdout:
-            STATS_FILE_CURRENT_FLAG = 0
-            
-            if not STATS_FILE_INIT_FLAG:
-                console_logger.warning("No UPF stats file")
-                STATS_FILE_INIT_FLAG = 1
+        # Create and return the dictionary of PDR statistics
+        pdr_stats = {
+            'seid': seid,
+            'pdrid': pdrid,
+            'ul_packet_count': int(ul_packet_count_match.group(1)),
+            'dl_packet_count': int(dl_packet_count_match.group(1)),
+            'ul_byte_count': int(ul_byte_count_match.group(1)),
+            'dl_byte_count': int(dl_byte_count_match.group(1)),
+            'timestamp': int(time.time()),
+            'n3_ip': get_upf_ip_addr('n3'),
+            'n4_ip': get_upf_ip_addr('n4')
+        }
+        return pdr_stats
 
-            if STATS_FILE_CURRENT_FLAG != STATS_FILE_PREV_FLAG:
-                console_logger.warning("No UPF stats file")
-                STATS_FILE_PREV_FLAG = STATS_FILE_CURRENT_FLAG
-            return
+    except IOError as e:
+        logging.error(f"Error writing to proc file: {e}")
 
-        data = json.loads(stdout)
-        console_logger.debug(data)
-
-        global CURRENT_STATS
-        CURRENT_STATS = data
-
-        for item in data:
-            export_to_prometheus(item)
-            
-    
-    except FileNotFoundError:
-        console_logger.exception("Error in getting metrics!")
-
-def export_to_prometheus(stats_item):
-
-    pkt_count = stats_item["pkt_count"]
-    byte_count = stats_item["byte_count"]
-    pdrid = str(stats_item["pdrid"])
-    seid = str(stats_item["seid"])
-    n3_ipaddr = str(stats_item["upf_n3_ipaddr"])
-    n4_ipaddr = str(stats_item["upf_n4_ipaddr"])
+    except subprocess.CalledProcessError as e:
+        logging.error(
+            f"Error in getting PDR stats for SEID {seid} and PDRID {pdrid}: {e}")
+        return {}
 
 
-    PDR_PACKET_COUNT.labels(
-        n3_ipaddr=n3_ipaddr, 
-        n4_ipaddr=n4_ipaddr, 
-        seid=seid, 
-        pdrid=pdrid, 
-        direction="uplink").set(pkt_count[0])
-    PDR_PACKET_COUNT.labels(
-        n3_ipaddr=n3_ipaddr, 
-        n4_ipaddr=n4_ipaddr, 
-        seid=seid, 
-        pdrid=pdrid, 
-        direction="downlink").set(pkt_count[1])
+def get_upf_ip_addr(iface: str) -> str:
+    """
+    Returns the IP address of the interface.
+    """
+    try:
+        output = subprocess.check_output(["ip", "addr", "show", iface])
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Command {e.cmd} failed with error {e.returncode}: {e.stderr}")
+    except Exception as e:
+        raise RuntimeError(f"Error executing command: {e}")
 
-    PDR_BYTE_COUNT.labels(
-        n3_ipaddr=n3_ipaddr, 
-        n4_ipaddr=n4_ipaddr, 
-        seid=seid, 
-        pdrid=pdrid,
-        direction="uplink").set(byte_count[0])
-    PDR_BYTE_COUNT.labels(
-        n3_ipaddr=n3_ipaddr, 
-        n4_ipaddr=n4_ipaddr, 
-        seid=seid, 
-        pdrid=pdrid,
-        direction="downlink").set(byte_count[1])
+    ipv4_regex = r'inet ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
+    match = re.search(ipv4_regex, output.decode())
+    if match:
+        return match.group(1)
+    else:
+        raise RuntimeError("IP address not found in output")
 
 
+def log_data(data):
+    for log in data:
+        packet_counts = f"({log['ul_packet_count']},{log['dl_packet_count']})"
+        byte_counts = f"({log['ul_byte_count']},{log['dl_byte_count']})"
+        log_str = f"seid={log['seid']}|pdrid={log['pdrid']}|packet_counts={packet_counts}|byte_counts={byte_counts}|n3_ip={log['n3_ip']}|n4_ip={log['n4_ip']}"
+        logging.info(log_str)
+
+
+def get_active_pdrs_stats():
+    """
+    Returns a list of dictionaries containing the PDR statistics for all active PDRs.
+    Each dictionary contains 'pdrid', 'seid', 'ul_packet_count', 'dl_packet_count', 'ul_byte_count',
+    and 'dl_byte_count' keys.
+    """
+    active_pdrs = get_active_pdrs()
+    pdr_stats = []
+    for pdr in active_pdrs:
+        stats = get_pdr_stats(pdr['seid'], pdr['pdrid'])
+        pdr_stats.append(stats)
+    return pdr_stats
 
 
 def main():
-    console_logger.info("Starting Prometheus server on port {}".format(EXPORTER_PORT))
-    prom.start_http_server(EXPORTER_PORT)
-
+    start_http_server(SERVER_PORT)
+    logging.info("Starting Prometheus server ...")
     while True:
-        get_metrics()
-        time.sleep(UPDATE_PERIOD)
+        try:
+            pdr_stats = get_active_pdrs_stats()
+            if not pdr_stats:
+                logging.warning(f"No PDR statistics found ...")
+            log_data(pdr_stats)
+            for pdr in pdr_stats:
+                ul_label = {'seid': pdr['seid'], 'pdrid': pdr['pdrid'],
+                            'n3_ip': pdr['n3_ip'], 'n4_ip': pdr['n4_ip'], 'direction': 'UL'}
+                dl_label = {'seid': pdr['seid'], 'pdrid': pdr['pdrid'],
+                            'n3_ip': pdr['n3_ip'], 'n4_ip': pdr['n4_ip'], 'direction': 'DL'}
+                PACKET_COUNT.labels(**ul_label).set(pdr['ul_packet_count'])
+                PACKET_COUNT.labels(**dl_label).set(pdr['dl_packet_count'])
+                BYTE_COUNT.labels(**ul_label).set(pdr['ul_byte_count'])
+                BYTE_COUNT.labels(**dl_label).set(pdr['dl_byte_count'])
+            time.sleep(SLEEP_INTERVAL)
+        except Exception as e:
+            logging.error(e)
 
 
 if __name__ == "__main__":
