@@ -3,7 +3,7 @@
 #----------------------------------------------------------------------------
 # Author: Niloy Saha
 # Email: niloysaha.ns@gmail.com
-# version ='1.1.0'
+# version ='1.2.0'
 # ---------------------------------------------------------------------------
 """
 Prometheus exporter which exports slice throughput KPI.
@@ -18,6 +18,7 @@ requests.packages.urllib3.disable_warnings(
 
 import logging
 import time
+import os
 
 # setup logger for console output
 console_logger = logging.getLogger(__name__)
@@ -55,7 +56,8 @@ prom.REGISTRY.unregister(prom.PROCESS_COLLECTOR)
 prom.REGISTRY.unregister(prom.PLATFORM_COLLECTOR)
 prom.REGISTRY.unregister(prom.GC_COLLECTOR)
 
-UPDATE_PERIOD = 1
+DEFAULT_UPDATE_PERIOD = 10
+UPDATE_PERIOD = int(os.environ.get('UPDATE_PERIOD', DEFAULT_UPDATE_PERIOD))
 EXPORTER_PORT = 9000
 
 
@@ -71,8 +73,8 @@ def sanitize_prometheus_response(data):
         d["pdrid"] = int(labels["pdrid"])
         d["seid"] = int(labels["seid"])
         d["value"] = float(item["value"][1])
-        d["n3_ipaddr"] = labels["n3_ipaddr"]
-        d["n4_ipaddr"] = labels["n4_ipaddr"]
+        d["n3_ipaddr"] = labels["n3_ip"]
+        d["n4_ipaddr"] = labels["n4_ip"]
         d_list.append(d)
 
     df = pd.DataFrame(d_list)
